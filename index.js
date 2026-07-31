@@ -48,7 +48,21 @@ app.post('/api/confirm-order', async (req, res) => {
             return res.status(404).json({ success: false, message: 'لم يتم العثور على الطلب في النظام أو تعذر تحديثه' });
         }
 
-        // 2. جلب بيانات المتجر وصاحبه من جدول stores باستخدام store_id الخاص بالطلب
+        // 2. 🛒 جلب تفاصيل المنتجات المرتبطة بهذا الطلب من جدول order_details
+        const { data: items, error: itemsErr } = await supabase
+            .from('order_details')
+            .select('item_name, quantity, price')
+            .eq('order_id', orderId);
+
+        // ترتيب المنتجات في قائمة نصية أنيقة
+        let itemsText = '';
+        if (items && items.length > 0) {
+            itemsText = items.map(i => `▪️ ${i.item_name} (×${i.quantity}) - ${i.price * i.quantity} د.ع`).join('\n');
+        } else {
+            itemsText = 'لم يتم العثور على تفاصيل المنتجات';
+        }
+
+        // 3. جلب بيانات المتجر وصاحبه من جدول stores باستخدام store_id الخاص بالطلب
         const { data: store, error: storeErr } = await supabase
             .from('stores')
             .select('name, telegram_chat_id')
@@ -56,18 +70,23 @@ app.post('/api/confirm-order', async (req, res) => {
             .single();
 
         if (store && store.telegram_chat_id) {
-            // 3. إرسال الإشعار حصراً إلى مدير هذا المتجر على تليجرام
+            // 4. إرسال الإشعار حصراً إلى مدير هذا المتجر على تليجرام
             const storeAdminChatId = store.telegram_chat_id;
+            
+            // تصميم رسالة الفاتورة المحدثة مع المنتجات
             const adminMsg = `🚨 طلب جديد من متجر (${store.name})!\n\n` +
                              `🧾 رقم الفاتورة: #9000${order.id}\n` +
                              `👤 هاتف الزبون: ${order.customer_phone || 'غير متوفر'}\n` +
-                             `💰 المبلغ الإجمالي: ${order.grand_total} د.ع\n` +
-                             `📦 الحالة: قيد التجهيز 🌿\n\n` +
+                             `📝 ملاحظات الزبون: ${order.customer_notes || 'لا يوجد'}\n\n` +
+                             `🛒 *المنتجات المطلوبة:*\n${itemsText}\n\n` +
+                             `🚚 أجور التوصيل: ${order.total_delivery_fee || 0} د.ع\n` +
+                             `💰 الإجمالي الكلي: ${order.grand_total} د.ع\n\n` +
+                             `📦 الحالة: قيد التجهيز 🌿\n` +
                              `يرجى تجهيز الطلب وتسليمه للكابتن.`;
             
             // محاولة إرسال الرسالة، وتجنب توقف السيرفر إذا كان الـ Chat ID خاطئاً
             try {
-                await bot.telegram.sendMessage(storeAdminChatId, adminMsg);
+                await bot.telegram.sendMessage(storeAdminChatId, adminMsg, { parse_mode: 'Markdown' });
             } catch (tgErr) {
                 console.error(`⚠️ فشل إرسال رسالة تليجرام للمتجر ${store.name} (تأكد من الـ Chat ID وأن المدير ضغط Start):`, tgErr.message);
             }
@@ -75,7 +94,7 @@ app.post('/api/confirm-order', async (req, res) => {
             console.warn(`⚠️ المتجر رقم ${order.store_id} ليس لديه telegram_chat_id مسجل لتلقي الإشعارات.`);
         }
 
-        // 4. الرد بنجاح للواجهة الأمامية
+        // 5. الرد بنجاح للواجهة الأمامية
         res.json({ success: true, order });
 
     } catch (err) {
