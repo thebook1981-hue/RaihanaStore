@@ -54,6 +54,11 @@ app.post('/api/confirm-order', async (req, res) => {
             .select('item_name, quantity, price')
             .eq('order_id', orderId);
 
+        const { data: order, error } = await supabase
+    .from('platform_orders')
+    .select('address') // الرمز (*) يجلب جميع الحقول ومن ضمنها address الجديد
+    .eq('id', orderId)
+    .single();
         // ترتيب المنتجات في قائمة نصية أنيقة
         let itemsText = '';
         if (items && items.length > 0) {
@@ -77,6 +82,7 @@ app.post('/api/confirm-order', async (req, res) => {
             const adminMsg = `🚨 طلب جديد من متجر (${store.name})!\n\n` +
                              `🧾 رقم الفاتورة: #9000${order.id}\n` +
                              `👤 هاتف الزبون: ${order.customer_phone || 'غير متوفر'}\n` +
+                             `👤 منطقة الزبون: ${order.address || 'غير متوفر'}\n` +
                              `📝 ملاحظات الزبون: ${order.customer_notes || 'لا يوجد'}\n\n` +
                              `🛒 *المنتجات المطلوبة:*\n${itemsText}\n\n` +
                              `🚚 أجور التوصيل: ${order.total_delivery_fee || 0} د.ع\n` +
