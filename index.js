@@ -1,19 +1,4 @@
-const express = require('express');
-const { Telegraf } = require('telegraf');
-const { createClient } = require('@supabase/supabase-js');
-
-const app = express();
-app.use(express.json());
-
-const token = process.env.TELEGRAM_TOKEN;
-const bot = new Telegraf(token);
-
-const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_KEY
-);
-
-// مسار جديد: تأكيد الطلب مباشرة من واجهة المتجر وعرض الفاتورة للزبون + إرسال تنبيه للمدير
+// مسار تأكيد الطلب المباشر وتوجيه الإشعار لمدير المتجر الخاص به فقط
 app.post('/api/confirm-order', async (req, res) => {
     const { orderId } = req.body;
     
@@ -22,42 +7,43 @@ app.post('/api/confirm-order', async (req, res) => {
     }
 
     try {
-        // 1. تحديث حالة الطلب في Supabase إلى قيد التجهيز
-        const { data: order, error } = await supabase
+        // 1. جلب تفاصيل الطلب لمعرفة رقم المتجر
+        const { data: order, error: orderErr } = await supabase
             .from('platform_orders')
             .update({ status: 'قيد التجهيز' })
             .eq('id', orderId)
             .select()
             .single();
 
-        if (error || !order) {
+        if (orderErr || !order) {
             return res.status(404).json({ success: false, message: 'لم يتم العثور على الطلب في النظام' });
         }
 
-        // 2. إرسال إشعار فوري لك أنت (مدير المتجر) على حسابك في تليجرام
-        const adminChatId = process.env.ADMIN_CHAT_ID; // معرف محادثتك الشخصية على تليجرام
-        if (adminChatId) {
-            const adminMsg = `🚨 طلب جديد في متجر ريحانة!\n\n` +
+        // 2. جلب الـ Chat ID الخاص بمدير المتجر
+        const { data: store, error: storeErr } = await supabase
+            .from('stores')
+            .select('name, telegram_chat_id')
+            .eq('id', order.store_id)
+            .single();
+
+        if (store && store.telegram_chat_id) {
+            // 3. إرسال الإشعار لمدير المتجر عبر تليجرام
+            const storeAdminChatId = store.telegram_chat_id;
+            const adminMsg = `🚨 طلب جديد في متجر (${store.name})!\n\n` +
                              `🧾 رقم الفاتورة: #9000${order.id}\n` +
-                             `👤 اسم الزبون: ${order.customer_name || 'غير متوفر'}\n` +
-                             `📞 الهاتف: ${order.customer_phone || 'غير متوفر'}\n` +
+                             `👤 رقم الزبون: ${order.customer_phone || 'غير متوفر'}\n` +
+                             `💰 المبلغ: ${order.grand_total} د.ع\n` +
                              `📦 الحالة: قيد التجهيز 🌿`;
             
-            await bot.telegram.sendMessage(adminChatId, adminMsg);
+            await bot.telegram.sendMessage(storeAdminChatId, adminMsg);
+        } else {
+            console.warn(`المتجر ${order.store_id} ليس لديه telegram_chat_id`);
         }
 
-        // 3. إعادة الرد بنجاح للزبون لكي تظهر له الفاتورة على الشاشة
         res.json({ success: true, order });
 
     } catch (err) {
-        console.error('خطأ في التأكيد المباشر:', err);
-        res.status(500).json({ success: false, message: 'حدث خطأ داخلي في الخادم' });
+        console.error('خطأ:', err);
+        res.status(500).json({ success: false, message: 'خطأ في الخادم' });
     }
 });
-
-// المسارات الأخرى الافتراضية
-app.get('/', (req, res) => {
-    res.send('Raihana Store Direct API is running! 🚀');
-});
-
-module.exports = app;
