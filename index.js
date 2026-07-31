@@ -13,70 +13,116 @@ const supabase = createClient(
     process.env.SUPABASE_KEY
 );
 
-// التعامل مع أمر البدء وتأكيد الطلب
+// عند دخول المستخدم للبوت بأي طريقة
 bot.start(async (ctx) => {
-    const text = ctx.message.text; // مثال: "/start order_36"
-    const payload = text.split(' ')[1]; // "order_36"
-    
-    if (!payload || !payload.startsWith('order_')) {
-        return ctx.reply('أهلاً بك في متجر ريحانة! 🌿 يرجى تقديم طلباتك من خلال موقعنا الإلكتروني.');
+    const text = ctx.message.text;
+    const payload = text.split(' ')[1]; // إذا مرر رقم الطلب مباشرة
+
+    if (payload && payload.startsWith('order_')) {
+        const orderId = payload.replace('order_', '');
+        return handleOrderByID(ctx, orderId);
     }
 
-    const orderId = payload.replace('order_', '');
+    // إذا وصل الأمر فارغاً، نطلب منه مشاركة رقمه بأمان تام
+    await ctx.reply(
+        'أهلاً بك في متجر ريحانة! 🌿\nلأمانك وتأكيد طلبك بدقة، يرجى مشاركة رقم هاتفك معنا بالضغط على الزر أدناه:',
+        {
+            reply_markup: {
+                keyboard: [
+                    [{ text: '📱 مشاركة رقم الهاتف لتأكيد الطلب', request_contact: true }]
+                ],
+                resize_keyboard: true,
+                one_time_keyboard: true
+            }
+        }
+    );
+});
+
+// دالة لمعالجة الطلب عبر رقم الطلب المباشر
+async function handleOrderByID(ctx, orderId) {
     const chatId = ctx.chat.id;
-
     try {
-        await ctx.reply('⏳ جاري مطابقة بيانات طلبك في النظام...');
-
-        // البحث عن الطلب في قاعدة البيانات
-        const { data: order, error: fetchError } = await supabase
+        const { data: order, error } = await supabase
             .from('platform_orders')
             .select('*')
             .eq('id', orderId)
             .single();
 
-        if (fetchError || !order) {
-            return ctx.reply('❌ عذراً، لم نتمكن من العثور على طلبك في النظام.');
+        if (error || !order) {
+            return ctx.reply('❌ عذراً، لم نتمكن من العثور على الطلب.');
         }
 
-        if (order.status === 'مكتمل' || (order.telegram_chat_id && order.telegram_chat_id.trim() !== '')) {
+        if (order.status === 'مكتمل') {
             return ctx.reply('❌ عذراً، هذا الطلب تم تأكيده مسبقاً.');
         }
 
-        // تحديث الطلب برقم محادثة الزبون وتغيير حالته
-        const { error: updateError } = await supabase
+        await supabase
+            .from('platform_orders')
+            .update({ telegram_chat_id: chatId.toString(), status: 'قيد التجهيز' })
+            .eq('id', orderId);
+
+        await ctx.reply(`🎉 أهلاً بك في متجر ريحانة!\n\n✅ تم تأكيد طلبك بنجاح.\n🧾 رقم الفاتورة: #9000${orderId}\n📦 الحالة: قيد التجهيز الآن 🌿`);
+    } catch (e) {
+        ctx.reply('❌ حدث خطأ غير متوقع.');
+    }
+}
+
+// الاستماع لمشاركة رقم الهاتف من الزبون (التحقق الآمن)
+bot.on('contact', async (ctx) => {
+    const contact = ctx.message.contact;
+    let phone = contact.phone_number; // مثال: 9647701216260 أو 0770...
+    const chatId = ctx.chat.id;
+
+    // تنظيف وتوحيد شكل رقم الهاتف لضمان المطابقة الدقيقة مع قاعدة البيانات
+    const cleanPhone = phone.replace('+', '');
+
+    try {
+        await ctx.reply('⏳ جاري البحث عن طلباتك برقم الهاتف...');
+
+        // البحث في سوبابيس عن أحدث طلب غير مؤكد يطابق رقم الهاتف
+        const { data: orders, error } = await supabase
+            .from('platform_orders')
+            .select('*')
+            .or(`customer_phone.ilike.%${cleanPhone}%,customer_phone.ilike.%${phone}%`)
+            .neq('status', 'مكتمل')
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+        if (error || !orders || orders.length === 0) {
+            return ctx.reply('❌ لا توجد طلبات جديدة معلقة مرتبطة برقم الهاتفك هذا.');
+        }
+
+        const order = orders[0];
+
+        // تحديث الطلب برقم المحادثة وحالته
+        await supabase
             .from('platform_orders')
             .update({ 
                 telegram_chat_id: chatId.toString(),
                 status: 'قيد التجهيز' 
             })
-            .eq('id', orderId);
+            .eq('id', order.id);
 
-        if (updateError) {
-            console.error('خطأ التحديث:', updateError);
-            return ctx.reply('❌ حدث خطأ أثناء تحديث الطلب.');
-        }
-
-        await ctx.reply(`🎉 أهلاً بك في متجر ريحانة!\n\n✅ تم تأكيد طلبك بنجاح.\n🧾 رقم الفاتورة: #9000${orderId}\n📦 الحالة: قيد التجهيز الآن 🌿\n\nسنقوم بإرسال تحديثات التوصيل لك هنا مباشرة! 🛵`);
+        // إخفاء الكيبورد بعد المشاركة
+        await ctx.reply(`🎉 أهلاً بك في متجر ريحانة!\n\n✅ تم مطابقة وتأكيد طلبك بنجاح بناءً على رقم هاتفك.\n🧾 رقم الفاتورة: #9000${order.id}\n📦 الحالة: قيد التجهيز الآن 🌿`, {
+            reply_markup: { remove_keyboard: true }
+        });
 
     } catch (err) {
-        console.error('خطأ عام:', err);
-        await ctx.reply('❌ حدث خطأ غير متوقع.');
+        console.error(err);
+        await ctx.reply('❌ حدث خطأ أثناء مطابقة البيانات.');
     }
 });
 
-// نقطة استلام رسائل تليجرام (Webhook)
 app.post(`/api/webhook`, async (req, res) => {
     try {
         await bot.handleUpdate(req.body);
         res.status(200).send('OK');
     } catch (err) {
-        console.error('خطأ في الويب هوك:', err);
         res.status(500).send('Error');
     }
 });
 
-// أداة تلقائية لربط تليجرام مع Vercel بضغطة زر واحدة
 app.get('/api/set-webhook', async (req, res) => {
     const host = req.headers['x-forwarded-host'] || req.headers.host;
     const protocol = req.headers['x-forwarded-proto'] || 'https';
@@ -90,7 +136,7 @@ app.get('/api/set-webhook', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    res.send('Raihana Store Bot is running on Vercel! 🚀');
+    res.send('Raihana Store Bot is running securely! 🚀');
 });
 
 module.exports = app;
