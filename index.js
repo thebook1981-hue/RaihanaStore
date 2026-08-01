@@ -36,20 +36,19 @@ app.post('/api/confirm-order', async (req, res) => {
     }
 
     try {
-        // 1. تحديث حالة الطلب من "بانتظار التأكيد" إلى "قيد التجهيز" 
-        // واستخدام select('*') لجلب كل التفاصيل بما فيها address
+        // 1. تحديث حالة الطلب وجلب كل تفاصيله (بما فيها العنوان) في خطوة واحدة صحيحة
         const { data: order, error: orderErr } = await supabase
             .from('platform_orders')
             .update({ status: 'قيد التجهيز' })
             .eq('id', orderId)
-            .select('*') // يجلب جميع الحقول (address, phone, grand_total, الخ)
+            .select('*')
             .single();
 
         if (orderErr || !order) {
             return res.status(404).json({ success: false, message: 'لم يتم العثور على الطلب في النظام أو تعذر تحديثه' });
         }
 
-        // 2. 🛒 جلب تفاصيل المنتجات المرتبطة بهذا الطلب من جدول order_details
+        // 2. 🛒 جلب تفاصيل المنتجات المرتبطة بهذا الطلب
         const { data: items, error: itemsErr } = await supabase
             .from('order_details')
             .select('item_name, quantity, price')
@@ -63,7 +62,7 @@ app.post('/api/confirm-order', async (req, res) => {
             itemsText = 'لم يتم العثور على تفاصيل المنتجات';
         }
 
-        // 3. جلب بيانات المتجر وصاحبه من جدول stores باستخدام store_id الخاص بالطلب
+        // 3. جلب بيانات المتجر وصاحبه
         const { data: store, error: storeErr } = await supabase
             .from('stores')
             .select('name, telegram_chat_id')
@@ -71,10 +70,9 @@ app.post('/api/confirm-order', async (req, res) => {
             .single();
 
         if (store && store.telegram_chat_id) {
-            // 4. إرسال الإشعار حصراً إلى مدير هذا المتجر على تليجرام
+            // 4. إرسال الإشعار لمدير المتجر على تليجرام
             const storeAdminChatId = store.telegram_chat_id;
             
-            // تصميم رسالة الفاتورة المحدثة مع المنتجات والعنوان (address)
             const adminMsg = `🚨 طلب جديد من متجر (${store.name})!\n\n` +
                              `🧾 رقم الفاتورة: #9000${order.id}\n` +
                              `👤 هاتف الزبون: ${order.customer_phone || 'غير متوفر'}\n` +
@@ -86,14 +84,13 @@ app.post('/api/confirm-order', async (req, res) => {
                              `📦 الحالة: قيد التجهيز 🌿\n` +
                              `يرجى تجهيز الطلب وتسليمه للكابتن.`;
             
-            // محاولة إرسال الرسالة، وتجنب توقف السيرفر إذا كان الـ Chat ID خاطئاً
             try {
                 await bot.telegram.sendMessage(storeAdminChatId, adminMsg, { parse_mode: 'Markdown' });
             } catch (tgErr) {
-                console.error(`⚠️ فشل إرسال رسالة تليجرام للمتجر ${store.name} (تأكد من الـ Chat ID وأن المدير ضغط Start):`, tgErr.message);
+                console.error(`⚠️ فشل إرسال رسالة تليجرام للمتجر:`, tgErr.message);
             }
         } else {
-            console.warn(`⚠️ المتجر رقم ${order.store_id} ليس لديه telegram_chat_id مسجل لتلقي الإشعارات.`);
+            console.warn(`⚠️ المتجر ليس لديه telegram_chat_id مسجل لتلقي الإشعارات.`);
         }
 
         // 5. الرد بنجاح للواجهة الأمامية
