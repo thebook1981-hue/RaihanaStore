@@ -36,18 +36,14 @@ app.post('/api/confirm-order', async (req, res) => {
     }
 
     try {
-        // 1. تحديث حالة الطلب من "بانتظار التأكيد" إلى "قيد التجهيز" وجلب تفاصيله
+        // 1. تحديث حالة الطلب من "بانتظار التأكيد" إلى "قيد التجهيز" 
+        // واستخدام select('*') لجلب كل التفاصيل بما فيها address
         const { data: order, error: orderErr } = await supabase
             .from('platform_orders')
             .update({ status: 'قيد التجهيز' })
             .eq('id', orderId)
-            .select()
+            .select('*') // يجلب جميع الحقول (address, phone, grand_total, الخ)
             .single();
-        .from('platform_orders')
-    .select('address') // الرمز (*) يجلب جميع الحقول ومن ضمنها address الجديد
-    .eq('id', orderId)
-    .single();
-        // ترتيب المنتجات في قائمة نصية أنيقة
 
         if (orderErr || !order) {
             return res.status(404).json({ success: false, message: 'لم يتم العثور على الطلب في النظام أو تعذر تحديثه' });
@@ -59,7 +55,7 @@ app.post('/api/confirm-order', async (req, res) => {
             .select('item_name, quantity, price')
             .eq('order_id', orderId);
 
-    
+        // ترتيب المنتجات في قائمة نصية أنيقة
         let itemsText = '';
         if (items && items.length > 0) {
             itemsText = items.map(i => `▪️ ${i.item_name} (×${i.quantity}) - ${i.price * i.quantity} د.ع`).join('\n');
@@ -78,11 +74,11 @@ app.post('/api/confirm-order', async (req, res) => {
             // 4. إرسال الإشعار حصراً إلى مدير هذا المتجر على تليجرام
             const storeAdminChatId = store.telegram_chat_id;
             
-            // تصميم رسالة الفاتورة المحدثة مع المنتجات
+            // تصميم رسالة الفاتورة المحدثة مع المنتجات والعنوان (address)
             const adminMsg = `🚨 طلب جديد من متجر (${store.name})!\n\n` +
                              `🧾 رقم الفاتورة: #9000${order.id}\n` +
                              `👤 هاتف الزبون: ${order.customer_phone || 'غير متوفر'}\n` +
-                             `👤 منطقة الزبون: ${order.address || 'غير متوفر'}\n` +
+                             `📍 منطقة الزبون: ${order.address || 'توصيل مباشر'}\n` +
                              `📝 ملاحظات الزبون: ${order.customer_notes || 'لا يوجد'}\n\n` +
                              `🛒 *المنتجات المطلوبة:*\n${itemsText}\n\n` +
                              `🚚 أجور التوصيل: ${order.total_delivery_fee || 0} د.ع\n` +
