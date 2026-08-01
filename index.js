@@ -43,6 +43,11 @@ app.post('/api/confirm-order', async (req, res) => {
             .eq('id', orderId)
             .select()
             .single();
+        .from('platform_orders')
+    .select('address') // الرمز (*) يجلب جميع الحقول ومن ضمنها address الجديد
+    .eq('id', orderId)
+    .single();
+        // ترتيب المنتجات في قائمة نصية أنيقة
 
         if (orderErr || !order) {
             return res.status(404).json({ success: false, message: 'لم يتم العثور على الطلب في النظام أو تعذر تحديثه' });
@@ -54,12 +59,7 @@ app.post('/api/confirm-order', async (req, res) => {
             .select('item_name, quantity, price')
             .eq('order_id', orderId);
 
-        const { data: order, error } = await supabase
-    .from('platform_orders')
-    .select('address') // الرمز (*) يجلب جميع الحقول ومن ضمنها address الجديد
-    .eq('id', orderId)
-    .single();
-        // ترتيب المنتجات في قائمة نصية أنيقة
+    
         let itemsText = '';
         if (items && items.length > 0) {
             itemsText = items.map(i => `▪️ ${i.item_name} (×${i.quantity}) - ${i.price * i.quantity} د.ع`).join('\n');
