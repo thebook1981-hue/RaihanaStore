@@ -7,11 +7,12 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// الاتصال بقاعدة البيانات وتجهيز البوت باستخدام متغيرات البيئة من Vercel
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 
 // ==========================================
-// 🌟 1. برمجة أوامر بوت التليجرام 🌟
+// 🌟 1. برمجة أوامر بوت التليجرام (لخدمة توثيق الزبائن) 🌟
 // ==========================================
 
 // عند دخول الزبون للبوت من الموقع (مثال: /start req_12345)
@@ -87,10 +88,10 @@ bot.on('contact', async (ctx) => {
 // مسار الفحص
 app.get('/', (req, res) => res.send('✅ سيرفر ريحانة يعمل بنجاح!'));
 
-// مسار ربط البوت بـ Vercel (يُستخدم لمرة واحدة فقط)
+// مسار ربط البوت بـ Vercel (يُستخدم لمرة واحدة فقط لتفعيل الـ Webhook)
 app.get('/api/setup-webhook', async (req, res) => {
     try {
-        // استبدل هذا الرابط برابط مشروع Vercel الحقيقي الخاص بك
+        // ⚠️ لا تنسَ: استبدل هذا الرابط برابط مشروع Vercel الحقيقي الخاص بك!
         const webhookUrl = 'https://raihana-store.vercel.app/api/bot-webhook'; 
         await bot.telegram.setWebhook(webhookUrl);
         res.send(`✅ تم ربط البوت بنجاح بالرابط: ${webhookUrl}`);
@@ -102,10 +103,82 @@ app.get('/api/setup-webhook', async (req, res) => {
 // المسار المخفي الذي سيستقبل رسائل تليجرام (Webhook)
 app.use(bot.webhookCallback('/api/bot-webhook'));
 
-// المسار القديم الخاص بتأكيد الفاتورة (بقي كما هو بالضبط ليعمل مع موقعك)
+// ==========================================
+// 🌟 3. مسار تأكيد الطلب وإرسال الفواتير للمدير 🌟
+// ==========================================
 app.post('/api/confirm-order', async (req, res) => {
-    // ... (ضع كود تأكيد الطلب السابق هنا بالكامل) ...
-    res.json({ success: true, message: "تم الاستلام" });
+    const { orderId } = req.body;
+    
+    if (!orderId) {
+        return res.status(400).json({ success: false, message: 'رقم الطلب غير متوفر' });
+    }
+
+    try {
+        // 1. تحديث حالة الطلب وجلب كل تفاصيله (بما فيها العنوان)
+        const { data: order, error: orderErr } = await supabase
+            .from('platform_orders')
+            .update({ status: 'قيد التجهيز' })
+            .eq('id', orderId)
+            .select('*')
+            .single();
+
+        if (orderErr || !order) {
+            return res.status(404).json({ success: false, message: 'لم يتم العثور على الطلب في النظام أو تعذر تحديثه' });
+        }
+
+        // 2. 🛒 جلب تفاصيل المنتجات المرتبطة بهذا الطلب
+        const { data: items, error: itemsErr } = await supabase
+            .from('order_details')
+            .select('item_name, quantity, price')
+            .eq('order_id', orderId);
+
+        // ترتيب المنتجات في قائمة نصية أنيقة
+        let itemsText = '';
+        if (items && items.length > 0) {
+            itemsText = items.map(i => `▪️ ${i.item_name} (×${i.quantity}) - ${i.price * i.quantity} د.ع`).join('\n');
+        } else {
+            itemsText = 'لم يتم العثور على تفاصيل المنتجات';
+        }
+
+        // 3. جلب بيانات المتجر وصاحبه
+        const { data: store, error: storeErr } = await supabase
+            .from('stores')
+            .select('name, telegram_chat_id')
+            .eq('id', order.store_id)
+            .single();
+
+        if (store && store.telegram_chat_id) {
+            // 4. إرسال الإشعار لمدير المتجر على تليجرام
+            const storeAdminChatId = store.telegram_chat_id;
+            
+            const adminMsg = `🚨 طلب جديد من متجر (${store.name})!\n\n` +
+                             `🧾 رقم الفاتورة: #9000${order.id}\n` +
+                             `👤 هاتف الزبون: ${order.customer_phone || 'غير متوفر'}\n` +
+                             `📍 منطقة الزبون: ${order.address || 'توصيل مباشر'}\n` +
+                             `📝 ملاحظات الزبون: ${order.customer_notes || 'لا يوجد'}\n\n` +
+                             `🛒 *المنتجات المطلوبة:*\n${itemsText}\n\n` +
+                             `🚚 أجور التوصيل: ${order.total_delivery_fee || 0} د.ع\n` +
+                             `💰 الإجمالي الكلي: ${order.grand_total} د.ع\n\n` +
+                             `📦 الحالة: قيد التجهيز 🌿\n` +
+                             `يرجى تجهيز الطلب وتسليمه للكابتن.`;
+            
+            try {
+                await bot.telegram.sendMessage(storeAdminChatId, adminMsg, { parse_mode: 'Markdown' });
+            } catch (tgErr) {
+                console.error(`⚠️ فشل إرسال رسالة تليجرام للمتجر:`, tgErr.message);
+            }
+        } else {
+            console.warn(`⚠️ المتجر ليس لديه telegram_chat_id مسجل لتلقي الإشعارات.`);
+        }
+
+        // 5. الرد بنجاح للواجهة الأمامية
+        res.json({ success: true, order });
+
+    } catch (err) {
+        console.error('❌ خطأ داخلي في التأكيد المباشر:', err);
+        res.status(500).json({ success: false, message: 'حدث خطأ داخلي في الخادم' });
+    }
 });
 
+// تصدير التطبيق ليعمل على بيئة Vercel
 module.exports = app;
